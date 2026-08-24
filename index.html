@@ -477,6 +477,35 @@ button:focus-visible, input:focus-visible, .tab:focus-visible{outline:3px solid 
 
 <div class="wrap" id="app"></div>
 
+<!-- ============================================================
+     FIREBASE SETUP — required for this to work as a real website.
+     1. Create a free project at https://console.firebase.google.com
+     2. Enable Firestore Database (start in test mode)
+     3. Project settings -> your apps -> add a Web app -> copy the
+        config object it gives you and paste it in below, replacing
+        the placeholder values.
+     ============================================================ -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script>
+  const firebaseConfig = {
+    apiKey: "AIzaSyCbIsMBN46nk6_M5zBOTX9okHsYQPKXkOw",
+    authDomain: "case-file-hunt.firebaseapp.com",
+    projectId: "case-file-hunt",
+    storageBucket: "case-file-hunt.firebasestorage.app",
+    messagingSenderId: "1093863847041",
+    appId: "1:1093863847041:web:2797ebd4fa0b618fa18980",
+    measurementId: "G-W6DKRESHB8"
+  };
+  window.__firebaseReady = false;
+  try{
+    firebase.initializeApp(firebaseConfig);
+    window.__firebaseReady = true;
+  }catch(e){
+    console.error("Firebase failed to initialize:", e);
+  }
+</script>
+
 <script>
 /* =========================================================
    CONFIG — edit this section to customize the hunt.
@@ -575,16 +604,25 @@ const CONFIG = {
 
 /* ========================================================= */
 
-const STORAGE_KEY = "hunt_progress_v2";
-const HUNT_STATE_KEY = "hunt_state_v2";
-const ROSTER_PREFIX = "roster_v2_";
 const N = CONFIG.puzzles.length;
+
+// Firestore collection layout:
+//   progress/{normalizedName}   -> one friend's personal puzzle progress
+//   roster/{normalizedName}     -> lightweight summary for the admin roster
+//   shared/huntState            -> single doc: group hunt status + grants
+let db = null;
+try{
+  if(window.__firebaseReady) db = firebase.firestore();
+}catch(e){
+  console.error("Could not connect to Firestore:", e);
+}
+const LOCAL_NAME_KEY = "hunt_local_name"; // remembers this browser's name so people aren't re-prompted every visit
 
 let state = null;        // this visitor's personal progress
 let huntState = null;    // shared/global hunt status + individual grants
 let attemptCounts = [];
 let isAdmin = false;
-let storageOK = true;    // flips false if window.storage writes fail
+let storageOK = true;    // flips false if a Firestore write fails
 
 function normalize(s){
   return (s || "").trim().toLowerCase().replace(/\s+/g, " ");
@@ -611,34 +649,45 @@ function fmtDate(ts){
   return new Date(ts).toLocaleString();
 }
 
-/* ---------- storage ---------- */
+/* ---------- storage (Firestore) ---------- */
 
 async function loadState(){
+  const rememberedName = localStorage.getItem(LOCAL_NAME_KEY);
+  if(!rememberedName){ state = null; return; }
   try{
-    const res = await window.storage.get(STORAGE_KEY, false);
-    if(res && res.value){ state = JSON.parse(res.value); return; }
-  }catch(e){ /* no existing record */ }
+    const snap = await db.collection("progress").doc(normalizeKey(rememberedName)).get();
+    if(snap.exists){ state = snap.data(); return; }
+  }catch(e){ console.error("Could not load progress:", e); }
   state = null;
 }
 
 async function saveState(){
+  if(!state) return;
   try{
-    await window.storage.set(STORAGE_KEY, JSON.stringify(state), false);
+    await db.collection("progress").doc(normalizeKey(state.name)).set(state);
+    localStorage.setItem(LOCAL_NAME_KEY, state.name);
   }catch(e){
     console.error("Could not save progress:", e);
     storageOK = false;
   }
 }
 
+async function deleteState(){
+  if(state){
+    try{ await db.collection("progress").doc(normalizeKey(state.name)).delete(); }catch(e){ /* best effort */ }
+  }
+  localStorage.removeItem(LOCAL_NAME_KEY);
+}
+
 async function loadHuntState(){
   try{
-    const res = await window.storage.get(HUNT_STATE_KEY, true);
-    if(res && res.value){
-      huntState = JSON.parse(res.value);
+    const snap = await db.collection("shared").doc("huntState").get();
+    if(snap.exists){
+      huntState = snap.data();
       if(typeof huntState.testMode !== "boolean") huntState.testMode = false;
       return;
     }
-    // No stored value (truly never started). Only fall back to the pending
+    // No document yet (truly never started). Only fall back to the pending
     // default if we don't already have a state in memory — otherwise a
     // transient empty/stale read would silently wipe an active hunt.
     if(!huntState){
@@ -658,7 +707,7 @@ async function loadHuntState(){
 
 async function saveHuntState(){
   try{
-    await window.storage.set(HUNT_STATE_KEY, JSON.stringify(huntState), true);
+    await db.collection("shared").doc("huntState").set(huntState);
   }catch(e){
     console.error("Could not save hunt state:", e);
     storageOK = false;
@@ -667,29 +716,22 @@ async function saveHuntState(){
 
 async function updateRoster(){
   if(!state) return;
-  const key = ROSTER_PREFIX + normalizeKey(state.name);
   const solvedCount = state.solved.filter(Boolean).length;
   try{
-    await window.storage.set(key, JSON.stringify({
+    await db.collection("roster").doc(normalizeKey(state.name)).set({
       name: state.name,
       solvedCount: solvedCount,
       total: N,
       lastActive: Date.now()
-    }), true);
+    });
   }catch(e){ /* best effort, don't block the hunt on this */ }
 }
 
 async function loadRoster(){
   const entries = [];
   try{
-    const list = await window.storage.list(ROSTER_PREFIX, true);
-    const keys = (list && list.keys) || [];
-    for(const k of keys){
-      try{
-        const res = await window.storage.get(k, true);
-        if(res && res.value) entries.push(JSON.parse(res.value));
-      }catch(e){ /* skip unreadable entry */ }
-    }
+    const snap = await db.collection("roster").get();
+    snap.forEach(doc => entries.push(doc.data()));
   }catch(e){ /* no roster yet */ }
   entries.sort((a,b) => (b.lastActive||0) - (a.lastActive||0));
   return entries;
@@ -819,8 +861,8 @@ function renderMenu(){
     resetBtn.addEventListener("click", ()=>{
       closeMenu();
       showConfirm("Reset all progress on this device? This can't be undone.", async ()=>{
+        await deleteState().catch(()=>{});
         state = null;
-        await window.storage.delete(STORAGE_KEY, false).catch(()=>{});
         render();
       });
     });
@@ -833,7 +875,7 @@ function renderMenu(){
 
 function storageWarningHTML(){
   if(storageOK) return "";
-  return `<div class="alert-banner ended">Heads up: this page couldn't save your progress just now. Make sure you're opening this as a live Claude artifact (not a downloaded file opened directly in a browser), then refresh.</div>`;
+  return `<div class="alert-banner ended">Heads up: this page couldn't save your progress just now. Check that the Firebase config at the top of the file is filled in correctly and that Firestore is enabled, then refresh.</div>`;
 }
 
 /* ---------- stage computation: puzzle -> hint -> countdown -> next puzzle ---------- */
@@ -957,8 +999,8 @@ function attachFooterLinks(){
   if(resetBtn){
     resetBtn.addEventListener("click", ()=>{
       showConfirm("Reset all progress on this device? This can't be undone.", async ()=>{
+        await deleteState().catch(()=>{});
         state = null;
-        await window.storage.delete(STORAGE_KEY, false).catch(()=>{});
         render();
       });
     });
@@ -1479,6 +1521,33 @@ async function route(){
 }
 
 (async function init(){
+  if(firebaseConfig.apiKey === "PASTE_YOUR_API_KEY_HERE"){
+    document.getElementById("app").innerHTML = `
+      <div class="banner">
+        <div class="pin"></div>
+        <div class="stamp-title">SETUP NEEDED</div>
+        <div class="subtitle">The Firebase config at the top of this file still has placeholder values.
+Open the HTML file, find the firebaseConfig object near the top, and paste in the real values from your Firebase project (Project settings → your apps → Web app).</div>
+      </div>
+    `;
+    return;
+  }
+
+  if(!db){
+    document.getElementById("app").innerHTML = `
+      <div class="banner">
+        <div class="pin"></div>
+        <div class="stamp-title">CAN'T CONNECT</div>
+        <div class="subtitle">This page couldn't load the Firebase database it needs to run.
+
+If you're previewing this inside a chat app, that's expected — some previews block the external script this page loads from. Open the real hosted URL (e.g. your GitHub Pages link) instead.
+
+If you're already on the real site, try refreshing, checking your internet connection, or an ad-blocker/privacy extension that might be blocking Google's servers.</div>
+      </div>
+    `;
+    return;
+  }
+
   await loadState();
   if(state){
     attemptCounts = new Array(N).fill(0);
@@ -1512,3 +1581,4 @@ async function route(){
 </script>
 </body>
 </html>
+
