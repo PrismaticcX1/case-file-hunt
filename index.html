@@ -556,10 +556,10 @@ const CONFIG = {
       label: "Case File No. 4",
       title: "The Vault",
       type: "single",
-      prompt: "This file is sealed behind a 4-digit lock. Four clues were left behind:\n\n1. All four digits are different.\n2. The four digits add up to 20.\n3. The first digit is exactly double the last digit.\n4. The second digit is the largest digit in the code, and it's odd.\n\nCrack the code.",
-      answer: ["2981", "4952", "6743", "6923"],
-      hint: "Try the last digit first — it can only be a small number for the first digit to also be a single digit after doubling it.",
-      successNote: "Correct. The vault is open — one file left."
+      prompt: "The vault's code isn't handed to you outright — it's hidden inside this puzzle.\n\nEach letter below stands for exactly one digit (0–9). The same letter always means the same digit, different letters always mean different digits, and neither L nor V can be 0 (numbers don't start with a leading zero):\n\n    L O C K\n  + L O C K\n  ---------\n  V A U L T\n\nThat alone doesn't pin down a single answer — there's more than one valid way to fill in the letters. To find the one true code, you also need this: the four digits of the code (L O C K, in that order) add up to 20.\n\nEnter the 4-digit code — the value of L O C K.",
+      answer: "8543",
+      hint: "Solve it like long addition, one column at a time from the right, keeping track of what carries into the next column. K + K has to end in T, with something possibly carrying into the C + C column, then O + O, then L + L — and whatever carries out of that last column becomes V. Work through a few different digit assignments that satisfy the addition, then use the digit-sum clue to pick the one true code.",
+      successNote: "Correct. That one was never going to be quick."
     },
     {
       label: "Case File No. 5 — Final",
