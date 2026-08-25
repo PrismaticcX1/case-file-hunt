@@ -685,13 +685,16 @@ async function loadHuntState(){
     if(snap.exists){
       huntState = snap.data();
       if(typeof huntState.testMode !== "boolean") huntState.testMode = false;
+      if(!Array.isArray(huntState.manualUnlocks) || huntState.manualUnlocks.length !== N){
+        huntState.manualUnlocks = new Array(N).fill(false);
+      }
       return;
     }
     // No document yet (truly never started). Only fall back to the pending
     // default if we don't already have a state in memory — otherwise a
     // transient empty/stale read would silently wipe an active hunt.
     if(!huntState){
-      huntState = { status: "pending", startedAt: null, endedAt: null, grants: {}, testMode: false };
+      huntState = { status: "pending", startedAt: null, endedAt: null, grants: {}, testMode: false, manualUnlocks: new Array(N).fill(false) };
     }
   }catch(e){
     // Fetch failed. Keep whatever huntState we already have rather than
@@ -700,7 +703,7 @@ async function loadHuntState(){
     // whenever the periodic background sync hit a hiccup.
     console.error("Could not load hunt state, keeping last known value:", e);
     if(!huntState){
-      huntState = { status: "pending", startedAt: null, endedAt: null, grants: {}, testMode: false };
+      huntState = { status: "pending", startedAt: null, endedAt: null, grants: {}, testMode: false, manualUnlocks: new Array(N).fill(false) };
     }
   }
 }
@@ -761,7 +764,8 @@ function isUnlocked(i){
   if(h.status === "pending" || !h.startedAt) return false;
   if(i === 0) return true;
   if(!state.solved[i-1]) return false;
-  if(huntState.testMode) return true; // admin test mode: skip the daily wait entirely
+  if(huntState.testMode) return true; // admin test mode: skip the daily wait entirely for everyone
+  if(huntState.manualUnlocks && huntState.manualUnlocks[i]) return true; // admin manually unlocked this specific day
   const now = (h.status === "ended" && h.endedAt) ? h.endedAt : Date.now();
   return now >= scheduledUnlock(h, i);
 }
@@ -1325,6 +1329,25 @@ function handleAdminVerify(){
   }
 }
 
+function manualUnlockRowsHTML(h){
+  const manualUnlocks = h.manualUnlocks || new Array(N).fill(false);
+  // Case File 1 (index 0) always unlocks the moment the hunt starts, so
+  // there's nothing useful to manually unlock there — start from index 1.
+  const rows = [];
+  for(let i = 1; i < N; i++){
+    const label = CONFIG.puzzles[i].label;
+    const unlocked = manualUnlocks[i];
+    rows.push(`
+      <div class="status-line" style="justify-content:space-between; padding:8px 0; border-bottom:1px dashed rgba(0,0,0,0.12);">
+        <span>${escapeHTML(label)}</span>
+        <span class="status-pill ${unlocked ? "active" : ""}">${unlocked ? "Manually unlocked" : "On schedule"}</span>
+        <button class="small-btn" data-manual-unlock="${i}">${unlocked ? "Revert to schedule" : "Unlock now"}</button>
+      </div>
+    `);
+  }
+  return rows.join("");
+}
+
 function adminDashboardHTML(roster){
   const h = huntState;
   const statusClass = h.status === "active" ? "active" : (h.status === "ended" ? "ended" : "");
@@ -1381,6 +1404,12 @@ function adminDashboardHTML(roster){
       <div class="btn-row">
         <button id="toggle-test-mode">${h.testMode ? "Turn test mode off" : "Turn test mode on (unlock all days)"}</button>
       </div>
+    </div>
+
+    <div class="admin-card">
+      <h3>Manual Day Unlocks</h3>
+      <p class="muted" style="margin-top:-4px;">Force open one specific file early for everyone, without unlocking everything else like Test Mode does. People still have to solve the previous file first — this only skips the day-by-day wait for that one file.</p>
+      ${manualUnlockRowsHTML(h)}
     </div>
 
     <div class="admin-card">
@@ -1447,11 +1476,28 @@ function attachAdminHandlers(){
     refreshAdminDashboard();
   });
 
+  document.querySelectorAll("[data-manual-unlock]").forEach(btn=>{
+    btn.addEventListener("click", async ()=>{
+      const i = parseInt(btn.getAttribute("data-manual-unlock"), 10);
+      if(!Array.isArray(huntState.manualUnlocks) || huntState.manualUnlocks.length !== N){
+        huntState.manualUnlocks = new Array(N).fill(false);
+      }
+      huntState.manualUnlocks[i] = !huntState.manualUnlocks[i];
+      await saveHuntState();
+      showToast(huntState.manualUnlocks[i]
+        ? `${CONFIG.puzzles[i].label} unlocked early for everyone.`
+        : `${CONFIG.puzzles[i].label} back on the normal schedule.`);
+      refreshAdminDashboard();
+    });
+  });
+
   document.getElementById("reset-hunt").addEventListener("click", ()=>{
-    showConfirm("Reset the group hunt back to pending? This clears the start/end time but does not touch anyone's personal puzzle progress or individual grants.", async ()=>{
+    showConfirm("Reset the group hunt back to pending? This clears the start/end time, test mode, and any manual day unlocks — but does not touch anyone's personal puzzle progress or individual grants.", async ()=>{
       huntState.status = "pending";
       huntState.startedAt = null;
       huntState.endedAt = null;
+      huntState.testMode = false;
+      huntState.manualUnlocks = new Array(N).fill(false);
       await saveHuntState();
       showToast("Hunt reset to pending.");
       refreshAdminDashboard();
@@ -1581,4 +1627,3 @@ If you're already on the real site, try refreshing, checking your internet conne
 </script>
 </body>
 </html>
-
